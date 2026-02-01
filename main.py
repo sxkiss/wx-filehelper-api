@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Response, UploadFile, File
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 import bot
@@ -10,74 +11,117 @@ import asyncio
 # Global bot instance
 import processor
 
+# Create downloads directory
+DOWNLOAD_DIR = "/Users/aq/Desktop/myproject/wechat-filehelper-api/downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+# Global bot instance
 wechat_bot = bot.WeChatHelperBot()
 command_processor = processor.CommandProcessor(wechat_bot)
 listener_task = None
 
 async def background_listener():
     """Polls for new messages and processes them."""
-    print("Background listener started.")
     # Use a set to track processed message IDs or content to avoid dupes
     # Since we added 'id' extraction, we can try to use it.
     processed_ids = set()
-    processed_hashes = set()
+    sent_buffer = []  # Keep track of last ~10 sent messages to avoid loops
+    print("Background listener started.")
     
     while True:
         try:
+            # If not logged in, try to detect if login happened
+            if not wechat_bot.is_logged_in:
+                if await wechat_bot.check_login_status():
+                    print("Login detected by background listener!")
+            
             if wechat_bot.is_logged_in:
-                messages = await wechat_bot.get_latest_messages(limit=5)
+                messages = await wechat_bot.get_latest_messages(limit=8)
                 
                 # Process oldest first
                 for msg in reversed(messages):
                     content = msg.get('text', '').strip()
                     msg_id = msg.get('id')
                     
-                    # Deduplication logic
-                    # If we have an ID, use it. If not, use content hash as fallback (risky for identical repeated msgs)
+                    # Deduplication
                     unique_key = msg_id if msg_id else content
-                    
-                    if unique_key and unique_key not in processed_ids:
-                        print(f"New message processing: {content[:20]}...")
+                    if not unique_key or unique_key in processed_ids:
+                        continue
+                        
+                    # Loop prevention: If content matches something we just sent, skip it
+                    if content in sent_buffer:
                         processed_ids.add(unique_key)
-                        # clean up old ids
-                        if len(processed_ids) > 200:
-                            processed_ids.pop()
-                            
-                        reply = await command_processor.process(msg)
-                        if reply:
-                            print(f"Replying: {reply}")
+                        continue
+
+                    print(f"New message detected: {content[:30]}...")
+                    processed_ids.add(unique_key)
+                    
+                    # Auto-download for images and files
+                    if msg.get('type') in ['image', 'file']:
+                        file_name = msg.get('file_name') or f"download_{msg_id or unique_key[:8]}"
+                        if msg.get('type') == 'image' and not file_name.endswith('.png'):
+                            file_name += ".png"
+                        
+                        save_path = os.path.join(DOWNLOAD_DIR, file_name)
+                        print(f"Auto-downloading {msg.get('type')}: {file_name}")
+                        success = await wechat_bot.download_message_content(msg_id or unique_key, save_path)
+                        if success:
+                            reply = f"✅ 已成功接收保存: {file_name}"
                             await wechat_bot.send_text(reply)
+                            sent_buffer.append(reply)
+                            if len(sent_buffer) > 10: sent_buffer.pop(0)
+
+                    # Standard command processing
+                    reply = await command_processor.process(msg)
+                    if reply:
+                        print(f"Replying: {reply}")
+                        await wechat_bot.send_text(reply)
+                        sent_buffer.append(reply)
+                        if len(sent_buffer) > 10: sent_buffer.pop(0)
             
         except Exception as e:
             print(f"Listener error: {e}")
         
         await asyncio.sleep(2) # Poll every 2 seconds
 
+async def periodic_session_saver():
+    """Periodically saves session state."""
+    while True:
+        await asyncio.sleep(60)  # Save every 60 seconds
+        try:
+            if wechat_bot.is_logged_in:
+                await wechat_bot.save_session()
+        except Exception as e:
+            print(f"Session save error: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    # Note: headless=False might be needed for the first manual login if no state exists.
-    # But usually we run headless=True and use the QR code endpoint.
+    # Now that we have a persistent session, we can run headless.
     await wechat_bot.start(headless=True)
     
-    # Start background listener
+    # Start background tasks
     global listener_task
     listener_task = asyncio.create_task(background_listener())
+    session_saver_task = asyncio.create_task(periodic_session_saver())
     
     yield
     
     # Shutdown
-    if listener_task:
-        listener_task.cancel()
-        try:
-            await listener_task
-        except asyncio.CancelledError:
-            pass
+    for task in [listener_task, session_saver_task]:
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
             
-    await wechat_bot.save_session() # Save on exit
     await wechat_bot.stop()
 
 app = FastAPI(lifespan=lifespan, title="WeChat FileHelper API")
+
+# Mount downloads directory to be accessible via /static
+app.mount("/static", StaticFiles(directory=DOWNLOAD_DIR), name="static")
 
 class Message(BaseModel):
     content: str
@@ -163,6 +207,15 @@ async def trigger_save_session():
         return {"status": "saved"}
     else:
         raise HTTPException(status_code=500, detail="Failed to save session")
+
+@app.get("/downloads")
+async def list_downloads():
+    """List all received files."""
+    files = os.listdir(DOWNLOAD_DIR)
+    return {
+        "files": files,
+        "base_url": "/static/"
+    }
 
 @app.get("/debug_html")
 async def debug_html():

@@ -18,13 +18,16 @@ class CommandProcessor:
     async def process(self, msg: dict) -> str | None:
         """
         Process a message dictionary and return a text reply, or None.
-        Side effects (sending files) can be done directly via self.bot.
         """
-        text = msg.get('text', '')
+        text = msg.get('text', '').strip()
         if not text:
             return None
             
-        parts = text.strip().split()
+        # Special case: Health response test
+        if text.lower() == "#ping#":
+            return "Pong!"
+            
+        parts = text.split()
         if not parts:
             return None
             

@@ -5,6 +5,11 @@ venv/
 .env
 .DS_Store
 state.json
+user_data/
+downloads/
 *.log
+.pytest_cache/
+test_upload.txt
+received_file_debug.html
 playwright-report/
 test-results/
