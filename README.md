@@ -1,4 +1,6 @@
-# WeChat FileHelper API 🚀
+# Wx FileHelper API 🚀
+
+### 注意，项目后续将会尝试进行直接逆向，playwright是临时过渡方案
 
 一个基于 Playwright + FastAPI 的微信文件传输助手自动化框架。通过 HTTP API 将您的微信"文件传输助手"变成可编程的消息接口。
 
