@@ -1,18 +1,53 @@
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+.Python
 venv/
+env/
+.venv/
+
+# 环境配置
 .env
+.env.local
+.env.*.local
+
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# 运行时数据
 state.json
 user_data/
 downloads/
+trace_logs/
+scheduled_tasks.json
+messages.db
+messages.db-wal
+messages.db-shm
+
+# 日志
 *.log
+logs/
+
+# 测试
 .pytest_cache/
 test_upload.txt
 received_file_debug.html
 playwright-report/
 test-results/
-trace_logs/
-scheduled_tasks.json
-messages.db
+htmlcov/
+.coverage
+
+# IDE
+.idea/
+.vscode/settings.json
+*.swp
+*.swo
+*~
+
+# 临时文件
+*.tmp
+*.temp
+img_debug.html

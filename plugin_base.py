@@ -19,6 +19,7 @@
         return None  # 返回 None 表示不拦截
 """
 
+import bisect
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 import functools
@@ -65,6 +66,7 @@ class MessageHandlerInfo:
 # 全局注册表 - 插件加载时自动填充
 _commands: dict[str, CommandInfo] = {}
 _message_handlers: list[MessageHandlerInfo] = []
+_handlers_sorted: bool = True  # 标记是否已排序
 
 
 def command(
@@ -127,6 +129,8 @@ def on_message(priority: int = 0, name: str = ""):
                 return "检测到垃圾消息，已忽略"
             return None  # 继续后续处理
     """
+    global _handlers_sorted
+
     def decorator(func: MessageHandler) -> MessageHandler:
         info = MessageHandlerInfo(
             handler=func,
@@ -134,7 +138,7 @@ def on_message(priority: int = 0, name: str = ""):
             name=name or func.__name__,
         )
         _message_handlers.append(info)
-        _message_handlers.sort(key=lambda x: -x.priority)
+        _handlers_sorted = False  # 标记需要重新排序
 
         @functools.wraps(func)
         async def wrapper(ctx: CommandContext) -> str | None:
@@ -145,19 +149,25 @@ def on_message(priority: int = 0, name: str = ""):
 
 
 def get_registered_commands() -> dict[str, CommandInfo]:
-    """获取所有已注册的命令"""
-    return _commands.copy()
+    """获取所有已注册的命令 (直接返回，无复制)"""
+    return _commands
 
 
 def get_message_handlers() -> list[MessageHandlerInfo]:
-    """获取所有消息处理器 (按优先级排序)"""
-    return _message_handlers.copy()
+    """获取所有消息处理器 (按优先级排序，延迟排序)"""
+    global _handlers_sorted
+    if not _handlers_sorted:
+        _message_handlers.sort(key=lambda x: -x.priority)
+        _handlers_sorted = True
+    return _message_handlers
 
 
 def clear_registry():
     """清空注册表 (用于测试或重新加载)"""
+    global _handlers_sorted
     _commands.clear()
     _message_handlers.clear()
+    _handlers_sorted = True
 
 
 def get_help_text() -> str:

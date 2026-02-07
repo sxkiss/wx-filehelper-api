@@ -6,17 +6,21 @@
 - 按 message_id 快速查询
 - 支持 offset/limit 分页 (Telegram getUpdates 风格)
 - 文件元数据管理
+
+性能优化:
+- 单例连接 + WAL 模式
+- 统计缓存
 """
 
 import json
 import os
 import sqlite3
+import threading
 import time
-from contextlib import contextmanager
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 
 @dataclass
@@ -51,12 +55,37 @@ class StoredFile:
 
 
 class MessageStore:
+    """消息存储 - 使用单例连接 + WAL 模式优化性能"""
+
     def __init__(self, db_path: str | Path | None = None):
         self.db_path = Path(db_path or os.path.join(os.getcwd(), "messages.db"))
+        self._conn: sqlite3.Connection | None = None
+        self._lock = threading.Lock()
+        self._stats_cache: dict[str, Any] | None = None
+        self._stats_cache_time: float = 0
+        self._stats_cache_ttl: float = 5.0  # 缓存 5 秒
         self._init_db()
 
+    def _get_conn(self) -> sqlite3.Connection:
+        """获取数据库连接 (单例模式)"""
+        if self._conn is None:
+            self._conn = sqlite3.connect(
+                str(self.db_path),
+                timeout=30,
+                check_same_thread=False,
+                isolation_level=None,  # 自动提交模式
+            )
+            self._conn.row_factory = sqlite3.Row
+            # 启用 WAL 模式提升并发性能
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.execute("PRAGMA cache_size=10000")
+            self._conn.execute("PRAGMA temp_store=MEMORY")
+        return self._conn
+
     def _init_db(self):
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,15 +129,15 @@ class MessageStore:
                 );
             """)
 
-    @contextmanager
-    def _conn(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(str(self.db_path), timeout=10)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        finally:
-            conn.close()
+    def close(self):
+        """关闭数据库连接"""
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    def _invalidate_stats_cache(self):
+        """使统计缓存失效"""
+        self._stats_cache = None
 
     def save_message(
         self,
@@ -129,7 +158,8 @@ class MessageStore:
         raw_json = json.dumps(raw_data, ensure_ascii=False) if raw_data else None
         extra_json = json.dumps(extra, ensure_ascii=False) if extra else None
 
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             cursor = conn.execute(
                 """
                 INSERT OR REPLACE INTO messages
@@ -138,11 +168,13 @@ class MessageStore:
                 """,
                 (msg_id, msg_type, text, int(is_mine), ts, file_name, file_path, file_size, reply_to_id, raw_json, extra_json)
             )
+            self._invalidate_stats_cache()
             return cursor.lastrowid or 0
 
     def get_message(self, msg_id: str) -> StoredMessage | None:
         """按消息ID查询"""
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             row = conn.execute(
                 "SELECT * FROM messages WHERE msg_id = ?", (msg_id,)
             ).fetchone()
@@ -150,7 +182,8 @@ class MessageStore:
 
     def get_message_by_id(self, id: int) -> StoredMessage | None:
         """按自增ID查询"""
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             row = conn.execute(
                 "SELECT * FROM messages WHERE id = ?", (id,)
             ).fetchone()
@@ -186,7 +219,8 @@ class MessageStore:
         where = " AND ".join(conditions)
         params.append(min(limit, 1000))
 
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             rows = conn.execute(
                 f"SELECT * FROM messages WHERE {where} ORDER BY id ASC LIMIT ?",
                 params
@@ -195,7 +229,8 @@ class MessageStore:
 
     def get_latest(self, limit: int = 50) -> list[StoredMessage]:
         """获取最新消息"""
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             rows = conn.execute(
                 "SELECT * FROM messages ORDER BY id DESC LIMIT ?",
                 (min(limit, 1000),)
@@ -204,13 +239,15 @@ class MessageStore:
 
     def get_max_id(self) -> int:
         """获取最大消息ID"""
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             row = conn.execute("SELECT MAX(id) as max_id FROM messages").fetchone()
             return row["max_id"] or 0 if row else 0
 
     def count(self, since: int | None = None) -> int:
         """统计消息数量"""
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             if since:
                 row = conn.execute(
                     "SELECT COUNT(*) as cnt FROM messages WHERE timestamp >= ?", (since,)
@@ -230,7 +267,8 @@ class MessageStore:
         downloaded: bool = True,
     ) -> int:
         """保存文件元数据"""
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             cursor = conn.execute(
                 """
                 INSERT INTO files (msg_id, file_name, file_path, file_size, mime_type, md5, created_at, downloaded)
@@ -238,11 +276,13 @@ class MessageStore:
                 """,
                 (msg_id, file_name, file_path, file_size, mime_type, md5, int(time.time()), int(downloaded))
             )
+            self._invalidate_stats_cache()
             return cursor.lastrowid or 0
 
     def get_files(self, limit: int = 100, offset: int = 0) -> list[StoredFile]:
         """获取文件列表"""
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             rows = conn.execute(
                 "SELECT * FROM files ORDER BY created_at DESC LIMIT ? OFFSET ?",
                 (limit, offset)
@@ -251,7 +291,8 @@ class MessageStore:
 
     def get_file_by_msg_id(self, msg_id: str) -> StoredFile | None:
         """按消息ID获取文件"""
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             row = conn.execute(
                 "SELECT * FROM files WHERE msg_id = ?", (msg_id,)
             ).fetchone()
@@ -259,7 +300,8 @@ class MessageStore:
 
     def set_kv(self, key: str, value: Any):
         """设置键值"""
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             conn.execute(
                 "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)",
                 (key, json.dumps(value, ensure_ascii=False), int(time.time()))
@@ -267,7 +309,8 @@ class MessageStore:
 
     def get_kv(self, key: str, default: Any = None) -> Any:
         """获取键值"""
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             row = conn.execute(
                 "SELECT value FROM kv_store WHERE key = ?", (key,)
             ).fetchone()
@@ -281,10 +324,12 @@ class MessageStore:
     def cleanup_old_messages(self, days: int = 30) -> int:
         """清理旧消息"""
         cutoff = int(time.time()) - days * 86400
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             cursor = conn.execute(
                 "DELETE FROM messages WHERE timestamp < ?", (cutoff,)
             )
+            self._invalidate_stats_cache()
             return cursor.rowcount
 
     def cleanup_old_files(self, days: int = 30, delete_files: bool = False) -> int:
@@ -292,7 +337,8 @@ class MessageStore:
         cutoff = int(time.time()) - days * 86400
         deleted = 0
 
-        with self._conn() as conn:
+        conn = self._get_conn()
+        with self._lock:
             if delete_files:
                 rows = conn.execute(
                     "SELECT file_path FROM files WHERE created_at < ?", (cutoff,)
@@ -309,6 +355,7 @@ class MessageStore:
                 "DELETE FROM files WHERE created_at < ?", (cutoff,)
             )
             deleted = cursor.rowcount
+            self._invalidate_stats_cache()
 
         return deleted
 
@@ -342,8 +389,13 @@ class MessageStore:
         )
 
     def get_stats(self) -> dict[str, Any]:
-        """获取存储统计"""
-        with self._conn() as conn:
+        """获取存储统计 (带缓存)"""
+        now = time.time()
+        if self._stats_cache and (now - self._stats_cache_time) < self._stats_cache_ttl:
+            return self._stats_cache
+
+        conn = self._get_conn()
+        with self._lock:
             msg_count = conn.execute("SELECT COUNT(*) as cnt FROM messages").fetchone()["cnt"]
             file_count = conn.execute("SELECT COUNT(*) as cnt FROM files").fetchone()["cnt"]
             max_id = conn.execute("SELECT MAX(id) as max_id FROM messages").fetchone()["max_id"] or 0
@@ -355,7 +407,7 @@ class MessageStore:
 
         db_size = self.db_path.stat().st_size if self.db_path.exists() else 0
 
-        return {
+        self._stats_cache = {
             "db_path": str(self.db_path),
             "db_size_bytes": db_size,
             "message_count": msg_count,
@@ -363,3 +415,5 @@ class MessageStore:
             "max_update_id": max_id,
             "today_message_count": today_count,
         }
+        self._stats_cache_time = now
+        return self._stats_cache

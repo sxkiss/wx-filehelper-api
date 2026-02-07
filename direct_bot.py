@@ -15,6 +15,30 @@ from urllib.parse import parse_qs, quote, urlparse
 import httpx
 
 
+# 预编译正则表达式 (避免每次 trace 时重新编译)
+_SANITIZE_PATTERNS = [
+    re.compile(r'(pass_ticket\s*[=:]\s*)([^&\s"\',;]+)', re.IGNORECASE),
+    re.compile(r'(webwx_data_ticket\s*[=:]\s*)([^&\s"\',;]+)', re.IGNORECASE),
+    re.compile(r'(skey\s*[=:]\s*)([^&\s"\',;]+)', re.IGNORECASE),
+    re.compile(r'(sid\s*[=:]\s*)([^&\s"\',;]+)', re.IGNORECASE),
+    re.compile(r'(wxsid\s*[=:]\s*)([^&\s"\',;]+)', re.IGNORECASE),
+    re.compile(r'(deviceid\s*[=:]\s*)([^&\s"\',;]+)', re.IGNORECASE),
+    re.compile(r'(uin\s*[=:]\s*)([^&\s"\',;]+)', re.IGNORECASE),
+    re.compile(r'(aeskey\s*[=:]\s*)([^&\s"\',;]+)', re.IGNORECASE),
+    re.compile(r'(signature\s*[=:]\s*)([^&\s"\',;]+)', re.IGNORECASE),
+]
+
+_SANITIZE_JSON_PATTERNS = [
+    re.compile(r'("pass_ticket"\s*:\s*")[^"]*(")', re.IGNORECASE),
+    re.compile(r'("webwx_data_ticket"\s*:\s*")[^"]*(")', re.IGNORECASE),
+    re.compile(r'("Skey"\s*:\s*")[^"]*(")', re.IGNORECASE),
+    re.compile(r'("Sid"\s*:\s*")[^"]*(")', re.IGNORECASE),
+    re.compile(r'("DeviceID"\s*:\s*")[^"]*(")', re.IGNORECASE),
+    re.compile(r'("Signature"\s*:\s*")[^"]*(")', re.IGNORECASE),
+    re.compile(r'("AESKey"\s*:\s*")[^"]*(")', re.IGNORECASE),
+]
+
+
 class WeChatHelperBot:
     def __init__(self, entry_host: str = "szfilehelper.weixin.qq.com"):
         self.entry_host = entry_host
@@ -48,6 +72,11 @@ class WeChatHelperBot:
         self.trace_lock = asyncio.Lock()
         self.trace_seq = 0
 
+        # Trace 缓冲队列 (批量写入优化)
+        self._trace_buffer: deque[str] = deque(maxlen=100)
+        self._trace_flush_interval = 2.0  # 2 秒刷新一次
+        self._trace_flush_task: asyncio.Task | None = None
+
         self.device_id = self._gen_device_id()
         self.uuid = ""
         self.uuid_ts = 0.0
@@ -63,10 +92,14 @@ class WeChatHelperBot:
         self.last_login_code = 0
         self.last_login_message = "init"
 
-        self._msg_cache: list[dict[str, Any]] = []
+        # 使用带限制的数据结构防止内存无限增长
+        self._msg_cache: deque[dict[str, Any]] = deque(maxlen=200)
         self._raw_by_id: dict[str, dict[str, Any]] = {}
+        self._raw_by_id_order: deque[str] = deque(maxlen=500)  # 跟踪插入顺序
         self._seen_msg_ids: set[str] = set()
+        self._seen_msg_ids_order: deque[str] = deque(maxlen=5000)
         self._send_msg_ids: set[str] = set()
+        self._send_msg_ids_order: deque[str] = deque(maxlen=200)
 
     def _resolve_hosts(self, host: str) -> tuple[str, str]:
         if "cmfilehelper.weixin" in host:
@@ -79,6 +112,8 @@ class WeChatHelperBot:
         timeout = httpx.Timeout(connect=10.0, read=40.0, write=40.0, pool=10.0)
         if self.trace_enabled:
             self.trace_dir.mkdir(parents=True, exist_ok=True)
+            # 启动 trace 刷新任务
+            self._trace_flush_task = asyncio.create_task(self._trace_flush_loop())
 
         self.client = httpx.AsyncClient(
             timeout=timeout,
@@ -92,6 +127,18 @@ class WeChatHelperBot:
         await self.check_login_status(poll=False)
 
     async def stop(self):
+        # 停止 trace 刷新任务
+        if self._trace_flush_task:
+            self._trace_flush_task.cancel()
+            try:
+                await self._trace_flush_task
+            except asyncio.CancelledError:
+                pass
+            self._trace_flush_task = None
+
+        # 刷新剩余的 trace
+        await self._flush_trace_buffer()
+
         await self.save_session()
         if self.client:
             await self.client.aclose()
@@ -286,7 +333,7 @@ class WeChatHelperBot:
 
             msg_id = str(data.get("MsgID", ""))
             if msg_id:
-                self._send_msg_ids.add(msg_id)
+                self._add_to_limited_set(self._send_msg_ids, self._send_msg_ids_order, msg_id)
             return True
 
     async def send_file(self, file_path: str) -> bool:
@@ -333,7 +380,7 @@ class WeChatHelperBot:
 
         msg_id = str(data.get("MsgID", ""))
         if msg_id:
-            self._send_msg_ids.add(msg_id)
+            self._add_to_limited_set(self._send_msg_ids, self._send_msg_ids_order, msg_id)
         return True
 
     async def get_latest_messages(self, limit=10):
@@ -351,7 +398,7 @@ class WeChatHelperBot:
             self.is_logged_in = False
             return []
 
-        return self._msg_cache[-limit:]
+        return list(self._msg_cache)[-limit:]
 
     async def download_message_content(self, msg_id: str, save_path: str) -> bool:
         if not await self.check_login_status(poll=False):
@@ -630,7 +677,7 @@ class WeChatHelperBot:
         normalized = self._normalize_messages(add_msg_list)
         if normalized:
             self._msg_cache.extend(normalized)
-            self._msg_cache = self._msg_cache[-200:]
+            # deque 自动维护 maxlen，无需手动裁剪
         return normalized
 
     async def _notify_login_callback_if_needed(self):
@@ -718,16 +765,49 @@ class WeChatHelperBot:
         )
 
     async def _append_trace(self, row: dict[str, Any]):
+        """添加 trace 到缓冲区 (批量写入优化)"""
         if not self.trace_enabled:
+            return
+
+        line = json.dumps(row, ensure_ascii=False)
+        self._trace_buffer.append(line)
+
+    async def _trace_flush_loop(self):
+        """后台任务: 定期刷新 trace 缓冲到文件"""
+        while True:
+            try:
+                await asyncio.sleep(self._trace_flush_interval)
+                await self._flush_trace_buffer()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                print(f"[Trace] Flush error: {exc}")
+
+    async def _flush_trace_buffer(self):
+        """将缓冲区内容写入文件"""
+        if not self._trace_buffer:
             return
 
         if not self.trace_dir.exists():
             self.trace_dir.mkdir(parents=True, exist_ok=True)
 
-        line = json.dumps(row, ensure_ascii=False)
+        # 批量获取所有待写入的行
+        lines_to_write = []
         async with self.trace_lock:
-            with self.trace_log_file.open("a", encoding="utf-8") as file_obj:
-                file_obj.write(line + "\n")
+            while self._trace_buffer:
+                try:
+                    lines_to_write.append(self._trace_buffer.popleft())
+                except IndexError:
+                    break
+
+        if lines_to_write:
+            # 单次写入所有行 (减少 I/O 次数)
+            content = "\n".join(lines_to_write) + "\n"
+            try:
+                with self.trace_log_file.open("a", encoding="utf-8") as file_obj:
+                    file_obj.write(content)
+            except Exception as exc:
+                print(f"[Trace] Write error: {exc}")
 
     def _request_body_preview(self, request: httpx.Request, content_type: str) -> str:
         try:
@@ -777,6 +857,7 @@ class WeChatHelperBot:
         return redacted
 
     def _sanitize_text(self, text: str) -> str:
+        """使用预编译正则脱敏文本"""
         if not self.trace_redact:
             return text
 
@@ -784,31 +865,13 @@ class WeChatHelperBot:
             return ""
 
         sanitized = str(text)
-        patterns = [
-            r'(pass_ticket\s*[=:]\s*)([^&\s"\',;]+)',
-            r'(webwx_data_ticket\s*[=:]\s*)([^&\s"\',;]+)',
-            r'(skey\s*[=:]\s*)([^&\s"\',;]+)',
-            r'(sid\s*[=:]\s*)([^&\s"\',;]+)',
-            r'(wxsid\s*[=:]\s*)([^&\s"\',;]+)',
-            r'(deviceid\s*[=:]\s*)([^&\s"\',;]+)',
-            r'(uin\s*[=:]\s*)([^&\s"\',;]+)',
-            r'(aeskey\s*[=:]\s*)([^&\s"\',;]+)',
-            r'(signature\s*[=:]\s*)([^&\s"\',;]+)',
-        ]
-        for pattern in patterns:
-            sanitized = re.sub(pattern, r'\1***', sanitized, flags=re.IGNORECASE)
 
-        json_patterns = [
-            r'("pass_ticket"\s*:\s*")[^"]*(")',
-            r'("webwx_data_ticket"\s*:\s*")[^"]*(")',
-            r'("Skey"\s*:\s*")[^"]*(")',
-            r'("Sid"\s*:\s*")[^"]*(")',
-            r'("DeviceID"\s*:\s*")[^"]*(")',
-            r'("Signature"\s*:\s*")[^"]*(")',
-            r'("AESKey"\s*:\s*")[^"]*(")',
-        ]
-        for pattern in json_patterns:
-            sanitized = re.sub(pattern, r'\1***\2', sanitized)
+        # 使用预编译的正则表达式 (模块级别定义)
+        for pattern in _SANITIZE_PATTERNS:
+            sanitized = pattern.sub(r'\1***', sanitized)
+
+        for pattern in _SANITIZE_JSON_PATTERNS:
+            sanitized = pattern.sub(r'\1***\2', sanitized)
 
         return sanitized
 
@@ -956,12 +1019,41 @@ class WeChatHelperBot:
                     "is_mine": from_user != self.to_user_name,
                 }
 
-            self._seen_msg_ids.add(msg_id)
-            self._raw_by_id[msg_id] = item
+            # 使用有限集合添加
+            self._add_to_limited_set(self._seen_msg_ids, self._seen_msg_ids_order, msg_id)
+            self._add_to_limited_dict(self._raw_by_id, self._raw_by_id_order, msg_id, item)
+
             if normalized:
                 out.append(normalized)
 
         return out
+
+    def _add_to_limited_set(self, s: set, order: deque, value: str):
+        """添加到有限集合，自动清理最老的元素"""
+        if value in s:
+            return
+        s.add(value)
+        order.append(value)
+        # 当 order 满了时，deque 会自动移除最老的元素
+        # 但我们需要同步清理 set
+        if len(s) > order.maxlen + 100:
+            # 批量清理，避免频繁操作
+            valid_keys = set(order)
+            to_remove = s - valid_keys
+            s -= to_remove
+
+    def _add_to_limited_dict(self, d: dict, order: deque, key: str, value: Any):
+        """添加到有限字典，自动清理最老的元素"""
+        d[key] = value
+        order.append(key)
+        # 当 order 满了时，deque 会自动移除最老的元素
+        # 但我们需要同步清理 dict
+        if len(d) > order.maxlen + 100:
+            # 批量清理，避免频繁操作
+            valid_keys = set(order)
+            to_remove = [k for k in d if k not in valid_keys]
+            for k in to_remove:
+                del d[k]
 
     def _build_appmsg_xml(self, file_name: str, file_size: int, media_id: str) -> str:
         ext = Path(file_name).suffix.replace(".", "") or "bin"

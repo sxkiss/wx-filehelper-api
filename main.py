@@ -9,12 +9,14 @@ WeChat FileHelper Protocol Bot - FastAPI 服务入口
 - 稳定性增强
 """
 
+from collections import deque
 from contextlib import asynccontextmanager
 import asyncio
 import mimetypes
 import os
 from dataclasses import asdict
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 import shutil
 import tempfile
@@ -45,6 +47,11 @@ FILE_RETENTION_DAYS = int(os.getenv("FILE_RETENTION_DAYS", "0") or "0")
 HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "30") or "30")
 RECONNECT_DELAY = int(os.getenv("RECONNECT_DELAY", "5") or "5")
 MAX_RECONNECT_ATTEMPTS = int(os.getenv("MAX_RECONNECT_ATTEMPTS", "10") or "10")
+
+# 下载目录缓存
+_downloads_cache: dict[str, list[dict]] | None = None
+_downloads_cache_time: float = 0
+_downloads_cache_ttl: float = 10.0  # 缓存 10 秒
 
 
 # === 全局实例 ===
@@ -94,15 +101,23 @@ def add_error(error: str):
 # === 后台任务 ===
 
 async def background_listener():
-    """消息监听器 - 带自动重连"""
-    processed_order: list[str] = []
+    """消息监听器 - 带自动重连和动态轮询间隔"""
+    # 使用 deque 替代 list，pop(0) 复杂度从 O(n) 变为 O(1)
+    processed_order: deque[str] = deque(maxlen=5000)
     processed_set: set[str] = set()
-    sent_buffer: list[str] = []
+    sent_buffer: deque[str] = deque(maxlen=40)
+
+    # 动态轮询间隔
+    poll_interval = 1.0
+    min_interval = 0.5
+    max_interval = 3.0
 
     print("[Listener] Started")
 
     while True:
         try:
+            had_messages = False
+
             if not wechat_bot.is_logged_in:
                 await wechat_bot.check_login_status(poll=True)
                 if wechat_bot.is_logged_in:
@@ -124,12 +139,17 @@ async def background_listener():
 
                     processed_set.add(unique_key)
                     processed_order.append(unique_key)
-                    if len(processed_order) > 5000:
-                        old = processed_order.pop(0)
-                        processed_set.discard(old)
+                    # deque 自动维护 maxlen，无需手动 pop
+                    # 但需要同步清理 set
+                    if len(processed_order) == processed_order.maxlen:
+                        # 当 deque 满时，最老的元素会被自动移除
+                        # 我们需要在下次添加前清理 set
+                        pass
 
                     if content and content in sent_buffer:
                         continue
+
+                    had_messages = True
 
                     # 自动下载文件
                     if AUTO_DOWNLOAD and msg.get("type") in {"image", "file"}:
@@ -161,18 +181,27 @@ async def background_listener():
                         ok = await wechat_bot.send_text(reply)
                         if ok:
                             sent_buffer.append(reply)
-                            if len(sent_buffer) > 40:
-                                sent_buffer.pop(0)
 
                     stability_state["last_message_time"] = time.time()
                     stability_state["total_messages"] += 1
+
+                # 同步清理 processed_set (deque 满时旧元素被移除)
+                if len(processed_set) > len(processed_order) + 100:
+                    processed_set = set(processed_order)
+
+            # 动态调整轮询间隔
+            if had_messages:
+                poll_interval = min_interval
+            else:
+                poll_interval = min(poll_interval * 1.2, max_interval)
 
         except Exception as exc:
             error_msg = f"Listener error: {exc}"
             print(f"[Listener] {error_msg}")
             add_error(error_msg)
+            poll_interval = max_interval
 
-        await asyncio.sleep(1)
+        await asyncio.sleep(poll_interval)
 
 
 async def periodic_session_saver():
@@ -597,35 +626,81 @@ async def wechat_save_session():
 
 # === 文件管理 API ===
 
+def _scan_downloads(include_subdirs: bool = True) -> list[dict]:
+    """扫描下载目录 (带缓存)"""
+    global _downloads_cache, _downloads_cache_time
+
+    cache_key = f"subdirs_{include_subdirs}"
+    now = time.time()
+
+    if _downloads_cache is not None and cache_key in _downloads_cache:
+        if (now - _downloads_cache_time) < _downloads_cache_ttl:
+            return _downloads_cache[cache_key]
+
+    files = []
+
+    if include_subdirs:
+        # 使用 os.walk 比 rglob 更高效，一次遍历获取所有信息
+        for root, _, filenames in os.walk(DOWNLOAD_DIR):
+            root_path = Path(root)
+            for name in filenames:
+                if name.startswith("."):
+                    continue
+                file_path = root_path / name
+                try:
+                    stat_info = file_path.stat()
+                    rel_path = file_path.relative_to(DOWNLOAD_DIR)
+                    files.append({
+                        "name": name,
+                        "path": str(rel_path),
+                        "size": stat_info.st_size,
+                        "modified": stat_info.st_mtime,
+                    })
+                except OSError:
+                    continue
+    else:
+        try:
+            # 使用 os.scandir 比 iterdir 更高效
+            with os.scandir(DOWNLOAD_DIR) as entries:
+                for entry in entries:
+                    if entry.is_file() and not entry.name.startswith("."):
+                        try:
+                            stat_info = entry.stat()
+                            files.append({
+                                "name": entry.name,
+                                "path": entry.name,
+                                "size": stat_info.st_size,
+                                "modified": stat_info.st_mtime,
+                            })
+                        except OSError:
+                            continue
+        except OSError:
+            pass
+
+    files.sort(key=lambda x: x["modified"], reverse=True)
+
+    # 更新缓存
+    if _downloads_cache is None:
+        _downloads_cache = {}
+    _downloads_cache[cache_key] = files
+    _downloads_cache_time = now
+
+    return files
+
+
+def invalidate_downloads_cache():
+    """使下载目录缓存失效"""
+    global _downloads_cache
+    _downloads_cache = None
+
+
 @app.get("/downloads")
 async def list_downloads(
     limit: int = Query(default=100, ge=1, le=1000),
     include_subdirs: bool = Query(default=True),
 ):
-    """列出下载的文件"""
-    files = []
-
-    if include_subdirs:
-        for path in DOWNLOAD_DIR.rglob("*"):
-            if path.is_file() and not path.name.startswith("."):
-                rel_path = path.relative_to(DOWNLOAD_DIR)
-                files.append({
-                    "name": path.name,
-                    "path": str(rel_path),
-                    "size": path.stat().st_size,
-                    "modified": path.stat().st_mtime,
-                })
-    else:
-        for path in DOWNLOAD_DIR.iterdir():
-            if path.is_file() and not path.name.startswith("."):
-                files.append({
-                    "name": path.name,
-                    "path": path.name,
-                    "size": path.stat().st_size,
-                    "modified": path.stat().st_mtime,
-                })
-
-    files.sort(key=lambda x: x["modified"], reverse=True)
+    """列出下载的文件 (带缓存)"""
+    files = _scan_downloads(include_subdirs)
     return {
         "files": files[:limit],
         "total": len(files),
