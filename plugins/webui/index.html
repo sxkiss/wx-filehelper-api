@@ -286,6 +286,30 @@
             box-shadow: 0 0 0 5px rgba(0, 113, 227, 0.08);
         }
 
+        /* 消息发送工具栏布局 */
+        .message-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            gap: 20px;
+        }
+
+        .file-group {
+            flex: 1;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 12px;
+        }
+
+        /* 统一工具栏按钮宽度/高度 */
+        .message-toolbar .apple-btn {
+            width: auto;
+            min-width: 120px;
+            white-space: nowrap;
+        }
+
         /* 附件标签 */
         .file-tag {
             background: #f2f2f7;
@@ -460,19 +484,18 @@
                     Press Enter to Send</div>
             </div>
 
-            <div style="display: flex; justify-content: space-between; align-items: flex-end;">
-                <div style="flex: 1;">
+            <div class="message-toolbar">
+                <div class="file-group">
                     <input type="file" id="file-input" multiple onchange="updateFileList()" style="display: none;">
-                    <button class="apple-btn btn-secondary" onclick="document.getElementById('file-input').click()"
-                        style="width: auto; padding: 10px 20px; font-size: 0.9rem;">📎 选择文件</button>
-                    <div id="file-list" style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px;"></div>
+                    <button class="apple-btn btn-secondary" onclick="document.getElementById('file-input').click()">📎
+                        选择文件</button>
+                    <div id="file-list" class="file-list"></div>
                 </div>
 
-                <div style="display: flex; gap: 12px; margin-left: 20px;">
-                    <button class="apple-btn btn-secondary" id="upload-btn" onclick="uploadFiles()" disabled
-                        style="width: auto;">发送文件</button>
-                    <button class="apple-btn btn-primary" id="send-btn" onclick="sendMessage()"
-                        style="width: auto; min-width: 140px;">发送消息</button>
+                <div class="button-group">
+                    <button class="apple-btn btn-secondary" id="upload-btn" onclick="uploadFiles()"
+                        disabled>发送文件</button>
+                    <button class="apple-btn btn-primary" id="send-btn" onclick="sendMessage()">发送消息</button>
                 </div>
             </div>
         </div>
