@@ -10,15 +10,183 @@ from datetime import datetime
 from plugin_base import command, CommandContext
 
 
-@command("ping", description="测试连通性")
+# === 菜单与导航 ===
+
+@command("start", description="开始使用", aliases=["menu", "主菜单"])
+async def cmd_start(ctx: CommandContext) -> str:
+    """主菜单 - 类似 Telegram /start"""
+    return """📋 FileHelper Bot v2.0
+
+欢迎使用文件传输助手机器人！
+
+【快捷入口】
+/status - 查看状态
+/help - 命令列表
+/m - 快捷菜单
+
+【功能分类】
+/m server - 服务器管理
+/m file - 文件操作
+/m task - 定时任务
+/m chat - 聊天助手
+/m tools - 实用工具
+
+发送任意文字开始对话 ✨"""
+
+
+@command("m", description="快捷菜单", usage="/m [分类]")
+async def cmd_menu(ctx: CommandContext) -> str:
+    """分类菜单导航"""
+    if not ctx.args:
+        return """📂 功能分类
+
+/m server - 服务器管理
+  状态、插件、重载
+
+/m file - 文件操作
+  发送、下载、列表
+
+/m task - 定时任务
+  添加、删除、执行
+
+/m chat - 聊天助手
+  开关、问答
+
+/m tools - 实用工具
+  计算、时间、UUID
+
+/m api - API 说明
+  接口地址、调用示例"""
+
+    category = ctx.args[0].lower()
+
+    menus = {
+        "server": """🖥 服务器管理
+
+/status - 查看服务器状态
+/plugins - 查看已加载插件
+/reload - 重新加载插件
+/ip - 查看服务器IP
+
+【API】
+GET / - 状态总览
+GET /health - 健康检查
+GET /stability - 稳定性状态""",
+
+        "file": """📁 文件操作
+
+/sendfile <文件名> - 发送服务器文件
+  示例: /sendfile log.txt
+  示例: /sendfile /var/log/app.log
+
+【说明】
+- 相对路径从 downloads/ 目录查找
+- 绝对路径直接发送
+- 收到的文件自动保存到 downloads/日期/
+
+【API】
+GET /downloads - 文件列表
+POST /upload - 上传文件
+DELETE /files/{msg_id} - 删除文件""",
+
+        "task": """⏰ 定时任务
+
+/task list - 查看任务列表
+/task add HH:MM 命令 - 添加任务
+/task del <id> - 删除任务
+/task on <id> - 启用任务
+/task off <id> - 禁用任务
+/task run <id> - 立即执行
+
+【示例】
+/task add 09:00 /status
+  每天9点发送状态
+
+/task add 18:30 /sendfile daily.log
+  每天18:30发送日志""",
+
+        "chat": """💬 聊天助手
+
+/chat status - 查看聊天模式状态
+/chat on - 开启聊天模式
+/chat off - 关闭聊天模式
+/ask <问题> - 直接问答
+
+【说明】
+开启聊天模式后，非命令消息会转发到
+CHATBOT_WEBHOOK_URL 获取回复。
+
+可对接: OpenAI / Claude / 本地模型""",
+
+        "tools": """🔧 实用工具
+
+/time - 当前服务器时间
+/calc <表达式> - 计算器
+  示例: /calc 1+2*3
+  示例: /calc (10+5)/3
+
+/uuid - 生成随机 UUID
+/ip - 服务器网络信息
+/ping - 测试连通性
+/echo <内容> - 回显消息""",
+
+        "api": """🔌 API 说明
+
+【基础地址】
+http://服务器IP:8000
+
+【Telegram 兼容】
+GET /bot/getUpdates?offset=0&limit=100
+POST /bot/sendMessage {"text":"..."}
+POST /bot/sendDocument {"file_path":"..."}
+GET /bot/getMe
+
+【消息存储】
+GET /store/stats - 统计
+GET /store/messages - 历史
+
+【命令执行】
+POST /framework/execute
+{"command":"/status","send_back":true}
+
+详见 README.md""",
+    }
+
+    return menus.get(category, f"未知分类: {category}\n\n可用: server, file, task, chat, tools, api")
+
+
+@command("ping", description="测试连通性", hidden=True)
 async def cmd_ping(ctx: CommandContext) -> str:
     return "pong"
 
 
-@command("help", description="显示帮助信息", aliases=["h", "?"])
+@command("help", description="命令列表", aliases=["h", "?"])
 async def cmd_help(ctx: CommandContext) -> str:
-    from plugin_base import get_help_text
-    return get_help_text()
+    """命令列表 - 简洁版"""
+    return """📖 命令列表
+
+【导航】
+/start - 主菜单
+/m - 分类菜单
+/help - 本列表
+
+【常用】
+/status - 服务器状态
+/task list - 定时任务
+/chat on|off - 聊天模式
+/ask <问题> - 问答
+
+【文件】
+/sendfile <名称> - 发送文件
+
+【工具】
+/time /calc /uuid /ip
+
+【管理】
+/plugins - 插件状态
+/reload - 重载插件
+
+提示: /m <分类> 查看详细说明"""
 
 
 @command("echo", description="回显消息", usage="/echo <text>")

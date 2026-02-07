@@ -312,19 +312,147 @@ async def my_handler(ctx: CommandContext) -> str | None:
 | Telegram | 本框架 | 说明 |
 |----------|--------|------|
 | `getUpdates` | `/bot/getUpdates` | 完全兼容 offset/limit |
-| `sendMessage` | `/bot/sendMessage` | 支持 reply_to_message_id |
-| `sendDocument` | `/bot/sendDocument` | 支持 reply_to_message_id |
+| `sendMessage` | `/bot/sendMessage` | 支持 chat_id, reply_to_message_id, parse_mode |
+| `sendDocument` | `/bot/sendDocument` | 支持 document, caption |
+| `sendPhoto` | `/bot/sendPhoto` | 支持 photo, caption |
 | `getMe` | `/bot/getMe` | 返回机器人信息 |
-| Webhook | `MESSAGE_WEBHOOK_URL` | 推送模式 |
+| `getChat` | `/bot/getChat` | 返回 filehelper 信息 |
+| `getFile` | `/bot/getFile` | 获取文件下载路径 |
+| `setWebhook` | `/bot/setWebhook` | 设置消息推送 |
+| `deleteWebhook` | `/bot/deleteWebhook` | 删除 Webhook |
+| `getWebhookInfo` | `/bot/getWebhookInfo` | 查看 Webhook 状态 |
+
+## Python SDK
+
+提供类似 `python-telegram-bot` 的 SDK，减少迁移工作：
+
+```python
+from filehelper_sdk import Bot, Updater
+
+# 创建客户端
+bot = Bot("http://127.0.0.1:8000")
+
+# 发送消息
+bot.send_message(text="Hello!")
+
+# 发送文件
+bot.send_document(file_path="/path/to/file.pdf", caption="文件说明")
+
+# 获取更新 (自动管理 offset)
+updates = bot.get_updates()
+for update in updates:
+    print(f"收到: {update.message.text}")
+
+# 执行命令
+result = bot.execute_command("/status")
+print(result)
+```
+
+### 轮询模式
+
+```python
+from filehelper_sdk import Bot, Updater, Update
+
+bot = Bot("http://127.0.0.1:8000")
+
+def handle_message(update: Update):
+    text = update.message.text
+    print(f"收到消息: {text}")
+
+    # 回复消息
+    if text == "ping":
+        bot.send_message(
+            text="pong",
+            reply_to_message_id=update.message.message_id
+        )
+
+updater = Updater(bot)
+updater.add_handler(handle_message)
+updater.start_polling()  # 阻塞运行
+```
+
+### 异步使用
+
+```python
+import asyncio
+from filehelper_sdk import AsyncBot
+
+async def main():
+    bot = AsyncBot("http://127.0.0.1:8000")
+
+    # 发送消息
+    await bot.send_message(text="Hello!")
+
+    # 获取更新
+    updates = await bot.get_updates()
+    for update in updates:
+        print(update.message.text)
+
+    await bot.close()
+
+asyncio.run(main())
+```
 
 ## 迁移指南 (从 Telegram Bot)
 
-如果你有现成的 Telegram Bot 代码，可以通过以下步骤迁移：
+### 方式一：直接替换 API 地址
 
-1. 将 API 地址从 `https://api.telegram.org/bot<token>/` 改为 `http://your-server:8000/bot/`
-2. `sendMessage` 和 `sendDocument` 参数基本兼容
-3. `getUpdates` 的 offset 机制相同
-4. 文件上传改用 `/upload` 端点
+```python
+# 原 Telegram 代码
+import requests
+BASE_URL = "https://api.telegram.org/bot<TOKEN>/"
+
+# 改为
+BASE_URL = "http://your-server:8000/bot/"
+
+# 其他代码几乎不用改
+requests.post(f"{BASE_URL}sendMessage", json={"text": "Hello", "chat_id": 123})
+```
+
+### 方式二：使用 SDK
+
+```python
+# 原 python-telegram-bot 代码
+from telegram import Bot
+bot = Bot(token="YOUR_TOKEN")
+bot.send_message(chat_id=123, text="Hello")
+
+# 改为
+from filehelper_sdk import Bot
+bot = Bot("http://your-server:8000")
+bot.send_message(text="Hello")  # chat_id 会被忽略
+```
+
+### 参数兼容性
+
+| 参数 | 支持 | 说明 |
+|------|------|------|
+| `chat_id` | 忽略 | 只有 filehelper 一个对话 |
+| `text` | 完全支持 | - |
+| `reply_to_message_id` | 完全支持 | - |
+| `parse_mode` | 忽略 | 微信不支持 Markdown |
+| `disable_notification` | 忽略 | - |
+| `caption` | 完全支持 | 文件说明 |
+
+## 对话指令菜单
+
+发送 `/start` 或 `/m` 查看分类菜单：
+
+```
+📋 FileHelper Bot v2.0
+
+【快捷入口】
+/status - 查看状态
+/help - 命令列表
+/m - 快捷菜单
+
+【功能分类】
+/m server - 服务器管理
+/m file - 文件操作
+/m task - 定时任务
+/m chat - 聊天助手
+/m tools - 实用工具
+```
 
 ## License
 
