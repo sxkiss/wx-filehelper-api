@@ -1,14 +1,42 @@
 """
-示例插件 - 展示如何开发自定义命令和消息处理器
+示例插件 - 展示如何开发自定义命令、消息处理器和 HTTP 路由
 
 这个文件可以作为插件开发的模板。
 将 .py 文件放入 plugins/ 目录即可自动加载。
 """
 
-from plugin_base import command, on_message, CommandContext
+from plugin_base import (
+    command,
+    on_message,
+    route,
+    on_load,
+    on_unload,
+    CommandContext,
+    get_bot,
+    get_processor,
+    get_config,
+)
+
+
+# === 生命周期钩子 ===
+
+
+@on_load
+async def plugin_init():
+    """插件加载时执行"""
+    print("[ExamplePlugin] 插件已加载")
+    # 可以在这里初始化资源，如数据库连接
+
+
+@on_unload
+async def plugin_cleanup():
+    """插件卸载时执行"""
+    print("[ExamplePlugin] 插件即将卸载")
+    # 可以在这里清理资源
 
 
 # === 自定义命令示例 ===
+
 
 @command("time", description="显示当前时间", aliases=["now", "date"])
 async def cmd_time(ctx: CommandContext) -> str:
@@ -63,7 +91,39 @@ async def cmd_ip(ctx: CommandContext) -> str:
     return f"hostname={hostname}\nlocal_ip={local_ip}"
 
 
+# === HTTP 路由示例 ===
+
+
+@route("GET", "/example/status", tags=["Example"])
+async def example_status():
+    """示例插件状态"""
+    config = get_config()
+    return {
+        "plugin": "example",
+        "status": "running",
+        "server_label": config.server_label,
+    }
+
+
+@route("GET", "/example/commands", tags=["Example"])
+async def example_commands():
+    """列出本插件提供的命令"""
+    return {
+        "commands": ["time", "calc", "uuid", "ip"],
+        "aliases": {
+            "time": ["now", "date"],
+        },
+    }
+
+
+@route("POST", "/example/echo", tags=["Example"])
+async def example_echo(text: str = ""):
+    """回显接口 - 测试用"""
+    return {"echo": text, "length": len(text)}
+
+
 # === 消息处理器示例 ===
+
 
 # @on_message(priority=100, name="spam_filter")
 # async def filter_spam(ctx: CommandContext) -> str | None:

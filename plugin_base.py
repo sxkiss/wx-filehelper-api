@@ -6,9 +6,15 @@
 2. 使用 @command 装饰器注册命令
 3. 使用 @on_message 装饰器处理消息
 4. 使用 @route 装饰器注册 HTTP 路由
+5. 使用 @on_load/@on_unload 处理生命周期
 
 示例:
-    from plugin_base import command, on_message, route, CommandContext
+    from plugin_base import command, on_message, route, on_load, CommandContext
+    from plugin_base import get_bot, get_processor, get_config
+
+    @on_load
+    async def init():
+        print("插件已加载")
 
     @command("hello", description="打招呼")
     async def hello_cmd(ctx: CommandContext) -> str:
@@ -27,6 +33,49 @@
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 import functools
+
+
+# === 全局依赖 (运行时注入) ===
+
+_bot: Any = None
+_processor: Any = None
+_config: Any = None
+
+
+def inject_dependencies(bot: Any, processor: Any, config: Any) -> None:
+    """注入全局依赖 (由框架调用)"""
+    global _bot, _processor, _config
+    _bot = bot
+    _processor = processor
+    _config = config
+
+
+def get_bot():
+    """获取 WeChatHelperBot 实例"""
+    if _bot is None:
+        # 兼容旧方式
+        from main import wechat_bot
+        return wechat_bot
+    return _bot
+
+
+def get_processor():
+    """获取 CommandProcessor 实例"""
+    if _processor is None:
+        from main import command_processor
+        return command_processor
+    return _processor
+
+
+def get_config():
+    """获取配置实例"""
+    if _config is None:
+        from config import settings
+        return settings
+    return _config
+
+
+# === 数据类 ===
 
 
 @dataclass
@@ -78,10 +127,15 @@ class RouteInfo:
     tags: list[str] = field(default_factory=list)  # OpenAPI 标签
 
 
+LifecycleHandler = Callable[[], Awaitable[None]]
+
+
 # 全局注册表 - 插件加载时自动填充
 _commands: dict[str, CommandInfo] = {}
 _message_handlers: list[MessageHandlerInfo] = []
 _routes: list[RouteInfo] = []
+_on_load_handlers: list[LifecycleHandler] = []
+_on_unload_handlers: list[LifecycleHandler] = []
 _handlers_sorted: bool = True  # 标记是否已排序
 
 
@@ -206,6 +260,42 @@ def route(
     return decorator
 
 
+def on_load(func: LifecycleHandler) -> LifecycleHandler:
+    """
+    插件加载钩子 - 插件加载完成后执行
+
+    Example:
+        @on_load
+        async def init():
+            print("插件已加载")
+            # 初始化资源、连接数据库等
+    """
+    _on_load_handlers.append(func)
+
+    @functools.wraps(func)
+    async def wrapper():
+        return await func()
+    return wrapper
+
+
+def on_unload(func: LifecycleHandler) -> LifecycleHandler:
+    """
+    插件卸载钩子 - 插件卸载前执行
+
+    Example:
+        @on_unload
+        async def cleanup():
+            print("插件即将卸载")
+            # 清理资源、关闭连接等
+    """
+    _on_unload_handlers.append(func)
+
+    @functools.wraps(func)
+    async def wrapper():
+        return await func()
+    return wrapper
+
+
 def get_registered_commands() -> dict[str, CommandInfo]:
     """获取所有已注册的命令 (直接返回，无复制)"""
     return _commands
@@ -231,7 +321,32 @@ def clear_registry():
     _commands.clear()
     _message_handlers.clear()
     _routes.clear()
+    _on_load_handlers.clear()
+    _on_unload_handlers.clear()
     _handlers_sorted = True
+
+
+def get_lifecycle_handlers() -> tuple[list[LifecycleHandler], list[LifecycleHandler]]:
+    """获取生命周期钩子 (on_load, on_unload)"""
+    return _on_load_handlers, _on_unload_handlers
+
+
+async def run_on_load_handlers() -> None:
+    """执行所有 on_load 钩子"""
+    for handler in _on_load_handlers:
+        try:
+            await handler()
+        except Exception as exc:
+            print(f"[PluginBase] on_load error: {exc}")
+
+
+async def run_on_unload_handlers() -> None:
+    """执行所有 on_unload 钩子"""
+    for handler in _on_unload_handlers:
+        try:
+            await handler()
+        except Exception as exc:
+            print(f"[PluginBase] on_unload error: {exc}")
 
 
 def get_help_text() -> str:

@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 import direct_bot
 import processor
+import plugin_base
 from background import BackgroundTasks
 from config import settings
 from routes import bot_router, wechat_router, files_router
@@ -68,6 +69,12 @@ async def lifespan(app: FastAPI):
     route_count = command_processor.plugin_loader.register_routes(app)
     print(f"[Main] Registered {route_count} plugin routes")
 
+    # 注入依赖到插件系统
+    plugin_base.inject_dependencies(wechat_bot, command_processor, settings)
+
+    # 执行插件 on_load 钩子
+    await plugin_base.run_on_load_handlers()
+
     # 启动后台任务
     background_tasks = BackgroundTasks(
         bot=wechat_bot,
@@ -84,6 +91,9 @@ async def lifespan(app: FastAPI):
     background_tasks.start_all()
 
     yield
+
+    # 执行插件 on_unload 钩子
+    await plugin_base.run_on_unload_handlers()
 
     # 停止后台任务
     if background_tasks:
