@@ -183,9 +183,12 @@ async def root():
 async def get_qr():
     """获取登录二维码 (快捷入口)"""
     try:
-        if await wechat_bot.check_login_status(poll=False):
+        # 快速检查: 仅检查内存状态
+        if wechat_bot._has_auth() and wechat_bot.is_logged_in:
             return Response(content="Already logged in", media_type="text/plain")
-        png_bytes = await wechat_bot.get_login_qr()
+
+        # 使用 skip_login_check=True 避免重复网络检查
+        png_bytes = await wechat_bot.get_login_qr(skip_login_check=True)
         if not png_bytes:
             return Response(content="Already logged in", media_type="text/plain")
         return Response(content=png_bytes, media_type="image/png")

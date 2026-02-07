@@ -31,28 +31,10 @@ def _get_bot() -> "WeChatHelperBot":
     return _bot
 
 
-@router.get("/qr")
-async def get_qr() -> Response:
-    """获取登录二维码"""
-    bot = _get_bot()
-    try:
-        if await bot.check_login_status(poll=False):
-            return Response(content="Already logged in", media_type="text/plain")
-        png_bytes = await bot.get_login_qr()
-        if not png_bytes:
-            return Response(content="Already logged in", media_type="text/plain")
-        return Response(content=png_bytes, media_type="image/png")
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.get("/login/status")
-async def login_status(auto_poll: bool = Query(default=True)) -> dict[str, Any]:
-    """获取登录状态"""
-    bot = _get_bot()
-    if auto_poll:
-        await bot.check_login_status(poll=True)
-    return await bot.get_login_status_detail()
+# 注: 登录相关路由已统一到根路径
+# - GET /qr -> 获取二维码
+# - GET /login/status -> 登录状态
+# - GET /webui -> Web 管理界面
 
 
 @router.post("/session/save")

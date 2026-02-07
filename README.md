@@ -57,6 +57,7 @@ wechat-filehelper-api/
 └── plugins/
     ├── builtin.py       # 内置命令
     ├── example.py       # 示例插件
+    ├── webui.py         # Web 管理界面 (可选)
     └── framework_api.py # 框架管理 API (可选)
 ```
 
@@ -137,13 +138,28 @@ POST /bot/sendPhoto/upload  # Multipart 上传
 
 ---
 
-## 微信扩展接口
-
-### 登录管理
+## 登录接口
 
 ```
-GET  /wechat/qr              # 获取登录二维码 (PNG)
-GET  /wechat/login/status    # 获取登录状态
+GET  /qr               # 获取登录二维码 (PNG 图片)
+GET  /login/status     # 获取登录状态 (JSON)
+GET  /webui            # Web 管理界面 (可视化登录)
+```
+
+### WebUI
+
+访问 `http://127.0.0.1:8000/webui` 可使用 Web 界面：
+- 自适应二维码展示
+- 扫码状态实时反馈
+- 服务器状态监控
+
+---
+
+## 微信扩展接口
+
+### 会话管理
+
+```
 POST /wechat/session/save    # 保存会话
 ```
 
