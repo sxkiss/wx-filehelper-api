@@ -1,64 +1,23 @@
 """
-框架管理路由
+框架管理 API 插件
 
+提供框架管理的 HTTP 接口:
 - 任务调度 (定时任务)
 - 插件管理
 - 聊天模式
 - 命令执行
 - 健康检查
 - 稳定性监控
+
+这是一个默认插件，可通过删除此文件禁用这些接口。
 """
 
-from __future__ import annotations
-
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-if TYPE_CHECKING:
-    from direct_bot import WeChatHelperBot
-    from processor import CommandProcessor
-
-router = APIRouter(tags=["Framework"])
-
-# 依赖注入
-_processor: "CommandProcessor | None" = None
-_bot: "WeChatHelperBot | None" = None
-
-# 稳定性状态 (共享引用)
-_stability_state: dict[str, Any] | None = None
-
-
-def init(
-    processor: "CommandProcessor",
-    bot: "WeChatHelperBot",
-    stability_state: dict[str, Any],
-):
-    """初始化路由依赖"""
-    global _processor, _bot, _stability_state
-    _processor = processor
-    _bot = bot
-    _stability_state = stability_state
-
-
-def _get_processor() -> "CommandProcessor":
-    if _processor is None:
-        raise RuntimeError("Processor not initialized")
-    return _processor
-
-
-def _get_bot() -> "WeChatHelperBot":
-    if _bot is None:
-        raise RuntimeError("Bot not initialized")
-    return _bot
-
-
-def _get_stability() -> dict[str, Any]:
-    if _stability_state is None:
-        raise RuntimeError("Stability state not initialized")
-    return _stability_state
+from plugin_base import route
 
 
 # === 请求模型 ===
@@ -83,23 +42,44 @@ class ExecutePayload(BaseModel):
     send_back: bool = False
 
 
+# === 依赖获取 (延迟导入避免循环依赖) ===
+
+
+def _get_processor():
+    """获取 CommandProcessor 实例"""
+    from main import command_processor
+    return command_processor
+
+
+def _get_bot():
+    """获取 WeChatHelperBot 实例"""
+    from main import wechat_bot
+    return wechat_bot
+
+
+def _get_stability():
+    """获取稳定性状态"""
+    from main import stability_state
+    return stability_state
+
+
 # === Framework API ===
 
 
-@router.get("/framework/state")
+@route("GET", "/framework/state", tags=["Framework"])
 async def framework_state() -> dict[str, Any]:
     """获取框架状态"""
     return _get_processor().get_state()
 
 
-@router.post("/framework/chat_mode")
+@route("POST", "/framework/chat_mode", tags=["Framework"])
 async def framework_set_chat_mode(payload: ChatModePayload) -> dict[str, Any]:
     """设置聊天模式"""
     _get_processor().set_chat_mode(payload.enabled)
     return {"status": "ok", "enabled": payload.enabled}
 
 
-@router.post("/framework/execute")
+@route("POST", "/framework/execute", tags=["Framework"])
 async def framework_execute(payload: ExecutePayload) -> dict[str, Any]:
     """执行命令"""
     processor = _get_processor()
@@ -112,15 +92,16 @@ async def framework_execute(payload: ExecutePayload) -> dict[str, Any]:
 # === 任务调度 API ===
 
 
-@router.get("/framework/tasks")
+@route("GET", "/framework/tasks", tags=["Tasks"])
 async def framework_tasks() -> dict[str, Any]:
     """列出所有定时任务"""
     return {"tasks": _get_processor().list_tasks()}
 
 
-@router.post("/framework/tasks")
+@route("POST", "/framework/tasks", tags=["Tasks"])
 async def framework_add_task(payload: TaskCreatePayload) -> dict[str, Any]:
     """添加定时任务"""
+    from fastapi import HTTPException
     try:
         task = _get_processor().add_task(
             time_hm=payload.time_hm,
@@ -132,29 +113,30 @@ async def framework_add_task(payload: TaskCreatePayload) -> dict[str, Any]:
     return {"status": "ok", "task": task}
 
 
-@router.delete("/framework/tasks/{task_id}")
+@route("DELETE", "/framework/tasks/{task_id}", tags=["Tasks"])
 async def framework_delete_task(task_id: str) -> dict[str, str]:
     """删除定时任务"""
+    from fastapi import HTTPException
     ok = _get_processor().delete_task(task_id)
     if not ok:
         raise HTTPException(status_code=404, detail="task not found")
     return {"status": "deleted", "task_id": task_id}
 
 
-@router.post("/framework/tasks/{task_id}/enabled")
-async def framework_set_task_enabled(
-    task_id: str, payload: TaskEnabledPayload
-) -> dict[str, Any]:
+@route("POST", "/framework/tasks/{task_id}/enabled", tags=["Tasks"])
+async def framework_set_task_enabled(task_id: str, payload: TaskEnabledPayload) -> dict[str, Any]:
     """启用/禁用定时任务"""
+    from fastapi import HTTPException
     ok = _get_processor().set_task_enabled(task_id, payload.enabled)
     if not ok:
         raise HTTPException(status_code=404, detail="task not found")
     return {"status": "ok", "task_id": task_id, "enabled": payload.enabled}
 
 
-@router.post("/framework/tasks/{task_id}/run")
+@route("POST", "/framework/tasks/{task_id}/run", tags=["Tasks"])
 async def framework_run_task(task_id: str) -> dict[str, str]:
     """立即运行指定任务"""
+    from fastapi import HTTPException
     ok = await _get_processor().run_task_now(task_id)
     if not ok:
         raise HTTPException(status_code=404, detail="task not found")
@@ -164,13 +146,13 @@ async def framework_run_task(task_id: str) -> dict[str, str]:
 # === 插件 API ===
 
 
-@router.get("/plugins")
+@route("GET", "/plugins", tags=["Plugins"])
 async def list_plugins() -> dict[str, Any]:
     """列出已加载的插件"""
     return _get_processor().plugin_loader.get_status()
 
 
-@router.post("/plugins/reload")
+@route("POST", "/plugins/reload", tags=["Plugins"])
 async def reload_plugins() -> dict[str, Any]:
     """重新加载所有插件"""
     _get_processor().plugin_loader.reload_all()
@@ -180,7 +162,7 @@ async def reload_plugins() -> dict[str, Any]:
 # === 健康与稳定性 API ===
 
 
-@router.get("/health")
+@route("GET", "/health", tags=["Health"])
 async def health_check() -> dict[str, Any]:
     """健康检查端点"""
     processor = _get_processor()
@@ -196,7 +178,7 @@ async def health_check() -> dict[str, Any]:
     }
 
 
-@router.get("/stability")
+@route("GET", "/stability", tags=["Health"])
 async def stability_status() -> dict[str, Any]:
     """稳定性状态"""
     from config import settings
@@ -220,33 +202,28 @@ async def stability_status() -> dict[str, Any]:
 # === Trace API ===
 
 
-@router.get("/trace/status")
+@route("GET", "/trace/status", tags=["Debug"])
 async def trace_status() -> dict[str, Any]:
     """获取追踪状态"""
     return _get_bot().get_trace_status()
 
 
-@router.get("/trace/recent")
-async def trace_recent(
-    limit: int = Query(default=100, ge=1, le=1000)
-) -> dict[str, Any]:
+@route("GET", "/trace/recent", tags=["Debug"])
+async def trace_recent(limit: int = 100) -> dict[str, Any]:
     """获取最近的追踪记录"""
     rows = await _get_bot().read_recent_traces(limit=limit)
     return {"count": len(rows), "rows": rows}
 
 
-@router.post("/trace/clear")
+@route("POST", "/trace/clear", tags=["Debug"])
 async def trace_clear() -> dict[str, str]:
     """清除追踪记录"""
     await _get_bot().clear_traces()
     return {"status": "cleared"}
 
 
-# === 调试 API ===
-
-
-@router.get("/debug_html")
-async def debug_html() -> dict[str, Any]:
+@route("GET", "/debug_html", tags=["Debug"])
+async def debug_html():
     """获取页面源码 (调试用)"""
     from fastapi.responses import Response
     source = await _get_bot().get_page_source()

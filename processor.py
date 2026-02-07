@@ -4,9 +4,7 @@
 
 import asyncio
 import json
-import os
 import re
-import socket
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -35,39 +33,40 @@ class ScheduledTask:
 
 class CommandProcessor:
     def __init__(self, bot, download_dir: str | None = None):
+        # 延迟导入避免循环依赖
+        from config import settings
+
         self.bot = bot
-        self.download_dir = Path(download_dir or os.path.join(os.getcwd(), "downloads"))
+        self.download_dir = Path(download_dir) if download_dir else settings.download_dir
         self.started_at = time.time()
-        self.server_label = os.getenv("ROBOT_SERVER_LABEL", socket.gethostname())
+        self.server_label = settings.server_label
 
-        self.chat_enabled = os.getenv("CHATBOT_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
-        self.chat_webhook_url = os.getenv("CHATBOT_WEBHOOK_URL", "").strip()
-        self.chat_timeout = int(os.getenv("CHATBOT_TIMEOUT", "20") or "20")
+        # 聊天机器人配置
+        self.chat_enabled = settings.chatbot_enabled
+        self.chat_webhook_url = settings.chatbot_webhook_url
+        self.chat_timeout = settings.chatbot_timeout
 
-        self.task_file = Path(os.getenv("ROBOT_TASK_FILE", os.path.join(os.getcwd(), "scheduled_tasks.json")))
+        # 定时任务
+        self.task_file = settings.task_file
         self.tasks: dict[str, ScheduledTask] = {}
         self.scheduler_task: asyncio.Task | None = None
 
-        self.http_allowlist = [
-            host.strip().lower()
-            for host in os.getenv("ROBOT_HTTP_ALLOWLIST", "").split(",")
-            if host.strip()
-        ]
-
+        # HTTP 白名单
+        self.http_allowlist = settings.http_allowlist
         self.http_client = httpx.AsyncClient(timeout=httpx.Timeout(self.chat_timeout))
 
         # 消息 Webhook 推送
-        self.message_webhook_url = os.getenv("MESSAGE_WEBHOOK_URL", "").strip()
-        self.message_webhook_timeout = int(os.getenv("MESSAGE_WEBHOOK_TIMEOUT", "10") or "10")
+        self.message_webhook_url = settings.message_webhook_url
+        self.message_webhook_timeout = settings.message_webhook_timeout
 
         # 插件系统
-        plugins_dir = os.getenv("PLUGINS_DIR", os.path.join(os.getcwd(), "plugins"))
-        self.plugin_loader = PluginLoader(plugins_dir)
+        self.plugin_loader = PluginLoader(str(settings.plugins_dir))
 
         # 消息存储
-        db_path = os.getenv("MESSAGE_DB_PATH", os.path.join(os.getcwd(), "messages.db"))
-        self.message_store = MessageStore(db_path)
+        self.message_store = MessageStore(str(settings.message_db_path))
 
+        # 确保运行时文件存在
+        settings.ensure_runtime_files()
         self._load_tasks()
 
     async def start(self):

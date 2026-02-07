@@ -5,9 +5,10 @@
 1. 在 plugins/ 目录创建 .py 文件
 2. 使用 @command 装饰器注册命令
 3. 使用 @on_message 装饰器处理消息
+4. 使用 @route 装饰器注册 HTTP 路由
 
 示例:
-    from plugin_base import command, on_message, CommandContext
+    from plugin_base import command, on_message, route, CommandContext
 
     @command("hello", description="打招呼")
     async def hello_cmd(ctx: CommandContext) -> str:
@@ -17,9 +18,12 @@
     async def log_all(ctx: CommandContext) -> str | None:
         print(f"收到消息: {ctx.text}")
         return None  # 返回 None 表示不拦截
+
+    @route("GET", "/my-plugin/status")
+    async def my_status():
+        return {"status": "ok"}
 """
 
-import bisect
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 import functools
@@ -42,6 +46,7 @@ class CommandContext:
 
 CommandHandler = Callable[[CommandContext], Awaitable[str | None]]
 MessageHandler = Callable[[CommandContext], Awaitable[str | None]]
+RouteHandler = Callable[..., Awaitable[Any]]
 
 
 @dataclass
@@ -63,9 +68,20 @@ class MessageHandlerInfo:
     name: str = ""
 
 
+@dataclass
+class RouteInfo:
+    """路由注册信息"""
+    method: str              # GET, POST, PUT, DELETE, PATCH
+    path: str                # URL 路径
+    handler: RouteHandler    # 处理函数
+    name: str = ""           # 路由名称
+    tags: list[str] = field(default_factory=list)  # OpenAPI 标签
+
+
 # 全局注册表 - 插件加载时自动填充
 _commands: dict[str, CommandInfo] = {}
 _message_handlers: list[MessageHandlerInfo] = []
+_routes: list[RouteInfo] = []
 _handlers_sorted: bool = True  # 标记是否已排序
 
 
@@ -148,6 +164,48 @@ def on_message(priority: int = 0, name: str = ""):
     return decorator
 
 
+def route(
+    method: str,
+    path: str,
+    name: str = "",
+    tags: list[str] | None = None,
+):
+    """
+    路由装饰器 - 注册一个 HTTP 路由
+
+    Args:
+        method: HTTP 方法 (GET, POST, PUT, DELETE, PATCH)
+        path: URL 路径
+        name: 路由名称 (用于调试)
+        tags: OpenAPI 标签
+
+    Example:
+        @route("GET", "/my-plugin/status", tags=["MyPlugin"])
+        async def my_status():
+            return {"status": "ok", "plugin": "my-plugin"}
+
+        @route("POST", "/my-plugin/action")
+        async def my_action(data: dict):
+            return {"result": "done"}
+    """
+    def decorator(func: RouteHandler) -> RouteHandler:
+        info = RouteInfo(
+            method=method.upper(),
+            path=path,
+            handler=func,
+            name=name or func.__name__,
+            tags=tags or [],
+        )
+        _routes.append(info)
+
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            return await func(*args, **kwargs)
+        return wrapper
+
+    return decorator
+
+
 def get_registered_commands() -> dict[str, CommandInfo]:
     """获取所有已注册的命令 (直接返回，无复制)"""
     return _commands
@@ -162,11 +220,17 @@ def get_message_handlers() -> list[MessageHandlerInfo]:
     return _message_handlers
 
 
+def get_registered_routes() -> list[RouteInfo]:
+    """获取所有已注册的路由"""
+    return _routes
+
+
 def clear_registry():
     """清空注册表 (用于测试或重新加载)"""
     global _handlers_sorted
     _commands.clear()
     _message_handlers.clear()
+    _routes.clear()
     _handlers_sorted = True
 
 

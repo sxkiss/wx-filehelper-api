@@ -112,11 +112,28 @@ class Settings:
     login_callback_url: str = field(default_factory=lambda: os.getenv("LOGIN_CALLBACK_URL", "").strip())
 
     def __post_init__(self):
-        """初始化后处理 - 确保目录存在"""
+        """初始化后处理 - 确保目录和文件存在"""
+        # 创建必要目录
         self.download_dir.mkdir(parents=True, exist_ok=True)
         self.plugins_dir.mkdir(parents=True, exist_ok=True)
         if self.trace_enabled:
             self.trace_dir.mkdir(parents=True, exist_ok=True)
+
+    def ensure_runtime_files(self) -> None:
+        """确保运行时文件存在 (在启动时调用)"""
+        # 定时任务文件
+        if not self.task_file.exists():
+            self.task_file.write_text("[]", encoding="utf-8")
+
+    def cleanup_runtime_files(self) -> None:
+        """清理运行时文件 (可选，用于重置)"""
+        for path in [self.task_file, self.message_db_path]:
+            if path.exists():
+                path.unlink(missing_ok=True)
+        # WAL 文件
+        for suffix in ["-wal", "-shm"]:
+            wal_path = Path(str(self.message_db_path) + suffix)
+            wal_path.unlink(missing_ok=True)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典 (用于调试)"""

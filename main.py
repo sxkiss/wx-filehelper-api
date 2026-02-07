@@ -25,11 +25,10 @@ import direct_bot
 import processor
 from background import BackgroundTasks
 from config import settings
-from routes import bot_router, wechat_router, files_router, framework_router
+from routes import bot_router, wechat_router, files_router
 from routes.bot import init as init_bot_routes
 from routes.wechat import init as init_wechat_routes
 from routes.files import init as init_files_routes
-from routes.framework import init as init_framework_routes
 
 
 # === 全局实例 ===
@@ -64,7 +63,10 @@ async def lifespan(app: FastAPI):
     init_bot_routes(wechat_bot, command_processor)
     init_wechat_routes(wechat_bot)
     init_files_routes(command_processor)
-    init_framework_routes(command_processor, wechat_bot, stability_state)
+
+    # 注册插件路由 (包括 framework_api 插件)
+    route_count = command_processor.plugin_loader.register_routes(app)
+    print(f"[Main] Registered {route_count} plugin routes")
 
     # 启动后台任务
     background_tasks = BackgroundTasks(
@@ -102,11 +104,11 @@ app = FastAPI(
 # 静态文件
 app.mount("/static", StaticFiles(directory=str(settings.download_dir)), name="static")
 
-# 注册路由
+# 注册核心路由
 app.include_router(bot_router)
 app.include_router(wechat_router)
 app.include_router(files_router)
-app.include_router(framework_router)
+# 插件路由在 lifespan 中动态注册
 
 
 # === 请求模型 ===

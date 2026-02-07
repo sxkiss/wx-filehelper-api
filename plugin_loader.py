@@ -71,4 +71,35 @@ class PluginLoader:
             "errors": self.load_errors,
             "commands_count": len(plugin_base.get_registered_commands()),
             "handlers_count": len(plugin_base.get_message_handlers()),
+            "routes_count": len(plugin_base.get_registered_routes()),
         }
+
+    def register_routes(self, app) -> int:
+        """将插件路由注册到 FastAPI app"""
+        routes = plugin_base.get_registered_routes()
+        registered = 0
+
+        for route_info in routes:
+            method = route_info.method.upper()
+            path = route_info.path
+            handler = route_info.handler
+            tags = route_info.tags or ["Plugins"]
+
+            if method == "GET":
+                app.get(path, tags=tags)(handler)
+            elif method == "POST":
+                app.post(path, tags=tags)(handler)
+            elif method == "PUT":
+                app.put(path, tags=tags)(handler)
+            elif method == "DELETE":
+                app.delete(path, tags=tags)(handler)
+            elif method == "PATCH":
+                app.patch(path, tags=tags)(handler)
+            else:
+                print(f"[PluginLoader] Unknown HTTP method: {method}")
+                continue
+
+            registered += 1
+            print(f"[PluginLoader] Registered route: {method} {path}")
+
+        return registered
