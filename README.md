@@ -54,11 +54,16 @@ wechat-filehelper-api/
 │   ├── bot.py           # Telegram Bot API 兼容
 │   ├── wechat.py        # 微信扩展接口
 │   └── files.py         # 文件管理接口
-└── plugins/
-    ├── builtin.py       # 内置命令
-    ├── example.py       # 示例插件
-    ├── webui.py         # Web 管理界面 (可选)
-    └── framework_api.py # 框架管理 API (可选)
+└── plugins/             # 插件目录 (文件夹形式)
+    ├── builtin/         # 内置命令
+    │   └── __init__.py
+    ├── example/         # 示例插件
+    │   └── __init__.py
+    ├── webui/           # Web 管理界面
+    │   ├── __init__.py
+    │   └── index.html
+    └── framework_api/   # 框架管理 API
+        └── __init__.py
 ```
 
 ---
