@@ -1,0 +1,12 @@
+services:
+  wx-filehelper-api:
+    build:
+      context: .
+    ports:
+      - "8070:8000"
+    environment:
+      PLUGINS_DIR: "/app/plugins"
+    volumes:
+      - "./data:/data"
+    working_dir: "/data"
+    restart: unless-stopped

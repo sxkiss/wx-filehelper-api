@@ -26,6 +26,7 @@ scheduled_tasks.json
 messages.db
 messages.db-wal
 messages.db-shm
+data/
 
 # 日志
 *.log

@@ -29,6 +29,25 @@ python main.py
 
 服务启动后访问 `http://127.0.0.1:8000`
 
+## Docker Compose（本地构建）
+
+```bash
+# 构建并后台启动（对外端口：8070）
+docker compose up --build -d
+
+# 查看日志
+docker compose logs -f
+```
+
+访问 `http://127.0.0.1:8070`
+
+运行时数据会持久化到宿主机 `./data/`（包括 `state.json`、`messages.db`、`downloads/`、`trace_logs/` 等）。
+
+```bash
+# 停止
+docker compose down
+```
+
 ### 登录微信
 
 ```bash
