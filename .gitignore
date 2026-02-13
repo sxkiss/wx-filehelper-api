@@ -52,3 +52,4 @@ htmlcov/
 *.tmp
 *.temp
 img_debug.html
+.zcf
