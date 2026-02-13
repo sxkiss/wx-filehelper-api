@@ -20,5 +20,7 @@ FastAPI 服务入口与核心模块；同时包含容器化（Docker/Compose）�
 | `requirements.txt` | Build | Python 依赖清单 |
 | `README.md` | Docs | 使用说明与 API 文档 |
 | `Dockerfile` | Build | 镜像构建定义（运行 `python /app/main.py`） |
-| `docker-compose.yml` | Deploy | 本地 build + 运行（host `8070` -> container `8000`） |
+| `docker-compose.yml` | Deploy | 默认拉取镜像运行（host `8070` -> container `8000`） |
+| `docker-compose.local-build.yml` | Deploy | 本地构建镜像并运行（host `8070` -> container `8000`） |
 | `.dockerignore` | Build | 缩小构建上下文、避免带入运行时/大文件 |
+| `.github/` | CI | GitHub Actions 工作流（Docker 多架构构建与推送） |

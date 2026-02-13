@@ -1,7 +1,7 @@
 services:
   wx-filehelper-api:
-    build:
-      context: .
+    image: sxkiss/wx-filehelper-api:latest
+    pull_policy: always
     ports:
       - "8070:8000"
     environment:

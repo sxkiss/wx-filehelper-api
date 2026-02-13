@@ -1,3 +1,7 @@
+# @input: requirements.txt, project source code
+# @output: runnable image for wx-filehelper-api
+# @position: container build entry for local/CI image creation
+# @auto-doc: Update header and folder INDEX.md when this file changes
 FROM python:3.11-slim
 
 WORKDIR /app

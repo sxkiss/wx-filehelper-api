@@ -29,11 +29,11 @@ python main.py
 
 服务启动后访问 `http://127.0.0.1:8000`
 
-## Docker Compose（本地构建）
+## Docker Compose（默认拉镜像）
 
 ```bash
-# 构建并后台启动（对外端口：8070）
-docker compose up --build -d
+# 拉取并后台启动（对外端口：8070）
+docker compose up -d
 
 # 查看日志
 docker compose logs -f
@@ -44,18 +44,27 @@ docker compose logs -f
 运行时数据会持久化到宿主机 `./data/`（包括 `state.json`、`messages.db`、`downloads/`、`trace_logs/` 等）。
 
 ```bash
+# 指定镜像（可选）
+WX_FILEHELPER_IMAGE="yourname/wx-filehelper-api:latest" docker compose up -d
+
 # 停止
 docker compose down
+```
+
+## Docker Compose（本地构建）
+
+```bash
+docker compose -f docker-compose.local-build.yml up --build -d
 ```
 
 ### 登录微信
 
 ```bash
 # 获取二维码
-curl http://127.0.0.1:8000/qr -o qr.png
+curl http://127.0.0.1:8070/qr -o qr.png
 
 # 用微信扫描二维码后检查状态
-curl http://127.0.0.1:8000/login/status
+curl http://127.0.0.1:8070/login/status
 ```
 
 ---
@@ -64,6 +73,8 @@ curl http://127.0.0.1:8000/login/status
 
 ```
 wechat-filehelper-api/
+├── docker-compose.yml    # 默认：拉取镜像运行
+├── docker-compose.local-build.yml  # 本地构建运行
 ├── main.py              # FastAPI 入口
 ├── config.py            # 统一配置管理
 ├── background.py        # 后台任务 (监听/心跳/清理)

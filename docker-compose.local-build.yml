@@ -1,0 +1,17 @@
+# @input: Dockerfile build context, ./data volume
+# @output: compose service for local image build and runtime
+# @position: local development/deployment build profile
+# @auto-doc: Update header and folder INDEX.md when this file changes
+services:
+  wx-filehelper-api:
+    build:
+      context: .
+    image: "sxkiss/wx-filehelper-api:local"
+    ports:
+      - "8070:8000"
+    environment:
+      PLUGINS_DIR: "/app/plugins"
+    volumes:
+      - "./data:/data"
+    working_dir: "/data"
+    restart: unless-stopped
